@@ -8,11 +8,21 @@ implementation detail behind it.
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from agents import RunConfig, Runner
+from agents.memory.sqlite_session import SQLiteSession
 
 from app.agents import planner_agent
 from app.context import HotelAnalystContext
+
+# Conversation history lives here so follow-up questions ("when was it?")
+# can refer back to earlier turns. SQLite (stdlib, no extra service) is
+# enough for a single-user local project — see README for how session_id
+# is generated/passed by the frontend. File-based (not ':memory:') so
+# history survives an API restart; gitignored since it's runtime state.
+SESSIONS_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db"
+SESSIONS_DB_PATH.parent.mkdir(exist_ok=True)
 
 
 @dataclass
@@ -23,12 +33,19 @@ class AnalystResponse:
     elapsed_seconds: float
 
 
-async def ask(question: str) -> AnalystResponse:
+async def ask(question: str, session_id: str | None = None) -> AnalystResponse:
     """Runs the planner -> SQL agent -> summarizer pipeline for one
     question and returns the answer plus the ground-truth SQL/agent trail
     recorded via the shared context (see app/context.py for why we trust
-    that over the LLM's own narration)."""
+    that over the LLM's own narration).
+
+    session_id: when provided, prior turns for this session are loaded as
+    context and this turn is appended afterwards — this is what makes
+    follow-up questions like "when was it?" resolvable. When omitted (e.g.
+    from the manual test scripts), each call is a fresh, history-free run."""
     context = HotelAnalystContext()
+
+    session = SQLiteSession(session_id, db_path=SESSIONS_DB_PATH) if session_id else None
 
     # workflow_name groups every trace from this project under one name in
     # the OpenAI traces dashboard; a fresh group_id per call keeps each
@@ -44,6 +61,7 @@ async def ask(question: str) -> AnalystResponse:
         question,
         context=context,
         run_config=run_config,
+        session=session,
     )
     elapsed = time.monotonic() - start
 

@@ -21,13 +21,17 @@ Guardrails later. Do not treat this module as sufficient for a
 multi-tenant or internet-facing deployment.
 """
 
+import logging
 import os
 import re
+import time
 
 import psycopg
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
@@ -49,7 +53,14 @@ _FORBIDDEN_KEYWORDS = [
 
 
 def _get_connection() -> psycopg.Connection:
-    return psycopg.connect(**DB_CONFIG)
+    try:
+        return psycopg.connect(**DB_CONFIG)
+    except psycopg.OperationalError:
+        logger.exception(
+            "Failed to connect to Postgres at %s:%s/%s",
+            DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"],
+        )
+        raise
 
 
 def _assert_select_only(sql: str) -> None:
@@ -64,6 +75,7 @@ def _assert_select_only(sql: str) -> None:
     # semicolon followed by more (non-whitespace) content is not.
     without_trailing_semi = stripped.rstrip(";").rstrip()
     if ";" in without_trailing_semi:
+        logger.warning("Blocked multi-statement query: %s", sql)
         raise ValueError("Multiple statements are not allowed.")
 
     # Must start with SELECT or WITH (CTE feeding a SELECT). Comparing the
@@ -72,6 +84,7 @@ def _assert_select_only(sql: str) -> None:
     first_word_match = re.match(r"^\s*([A-Za-z]+)", without_trailing_semi)
     first_word = first_word_match.group(1).upper() if first_word_match else ""
     if first_word not in ("SELECT", "WITH"):
+        logger.warning("Blocked non-SELECT query (starts with %r): %s", first_word, sql)
         raise ValueError(
             f"Only SELECT queries are allowed (statement starts with '{first_word}')."
         )
@@ -83,6 +96,7 @@ def _assert_select_only(sql: str) -> None:
     upper_sql = without_trailing_semi.upper()
     for keyword in _FORBIDDEN_KEYWORDS:
         if re.search(rf"\b{keyword}\b", upper_sql):
+            logger.warning("Blocked query containing forbidden keyword %r: %s", keyword, sql)
             raise ValueError(f"Forbidden keyword '{keyword}' found in query.")
 
 
@@ -131,7 +145,16 @@ def run_query(sql: str, max_rows: int = 50) -> list[dict]:
     without_trailing_semi = sql.strip().rstrip(";")
     wrapped_sql = f"SELECT * FROM ({without_trailing_semi}) AS _subquery LIMIT %s"
 
+    start = time.monotonic()
     with _get_connection() as conn, conn.cursor() as cur:
         cur.execute(wrapped_sql, (max_rows,))
         columns = [desc[0] for desc in cur.description]
-        return [dict(zip(columns, row)) for row in cur.fetchall()]
+        rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+    elapsed_ms = (time.monotonic() - start) * 1000
+    logger.info(
+        "run_query returned %d row(s) in %.1fms: %s",
+        len(rows),
+        elapsed_ms,
+        " ".join(sql.split()),
+    )
+    return rows

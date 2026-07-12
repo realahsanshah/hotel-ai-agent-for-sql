@@ -10,6 +10,12 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [dbHealthy, setDbHealthy] = useState(null); // null = checking
 
+  // One id per page load, sent with every /ask call so the backend can look
+  // up this conversation's prior turns (see app/analyst.py). It's not
+  // persisted anywhere (no localStorage) — refreshing the page starts a new
+  // conversation, which is fine for a single-user learning project.
+  const [sessionId] = useState(() => crypto.randomUUID());
+
   useEffect(() => {
     fetch(`${API_URL}/health`)
       .then((res) => res.json())
@@ -30,7 +36,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed }),
+        body: JSON.stringify({ question: trimmed, session_id: sessionId }),
       });
 
       if (!res.ok) {
