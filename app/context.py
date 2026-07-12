@@ -22,6 +22,11 @@ class HotelAnalystContext:
 
     sql_log: list[str] = field(default_factory=list)
     agents_used: list[str] = field(default_factory=list)
+    # SQL + result rows, formatted as text, one entry per run_query call.
+    # This is the "evidence" fed to the output guardrail's fact-check
+    # (app/guardrails.py) so the final answer's numbers can be checked
+    # against what the database actually returned, not just trusted.
+    evidence_log: list[str] = field(default_factory=list)
 
     def record_agent(self, name: str) -> None:
         if name not in self.agents_used:
@@ -29,3 +34,6 @@ class HotelAnalystContext:
 
     def record_sql(self, sql: str) -> None:
         self.sql_log.append(sql)
+
+    def record_evidence(self, sql: str, rows: list[dict]) -> None:
+        self.evidence_log.append(f"Query: {' '.join(sql.split())}\nResult: {rows}")

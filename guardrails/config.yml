@@ -1,0 +1,34 @@
+# NeMo Guardrails config for the hotel data analyst.
+#
+# This is deliberately NOT used to generate the actual answer — the
+# OpenAI Agents SDK pipeline in app/agents.py still owns that. This
+# config is loaded into its own LLMRails instance (app/guardrails.py) and
+# called with `dialog`/`retrieval` disabled, so it only ever runs the
+# input/output "self-check" flows below and returns either the message
+# unchanged (allowed) or a refusal (blocked). See AGENT_PLAN.md section 2
+# for why the rails sit here (around the pipeline) rather than inside it.
+#
+# "self check" rails are NeMo Guardrails' simplest rail type: they ask the
+# same LLM a focused yes/no question using the prompts in prompts.yml,
+# rather than requiring hand-authored Colang dialogue flows for every
+# case we want to catch. That's the right tradeoff for a project-specific
+# policy like "only answer hotel data questions" — custom Colang flows
+# would be overkill here.
+models:
+  - type: main
+    engine: openai
+    model: gpt-4.1-mini
+
+rails:
+  input:
+    flows:
+      - self check input
+  output:
+    flows:
+      - self check output
+      # Cross-checks the final answer's claims against the real SQL query
+      # results (app/context.py's evidence_log) before it reaches the UI.
+      # This is what catches the "There are 6 properties" hallucination we
+      # found in manual testing, where the SQL correctly returned 3 but the
+      # summarizer's prose stated a different number.
+      - self check facts

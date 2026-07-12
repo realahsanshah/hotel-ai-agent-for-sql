@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "faker>=40.28.1",
     "fastapi>=0.139.0",
+    "nemoguardrails>=0.23.0",
     "openai-agents>=0.18.2",
     "psycopg[binary]>=3.3.4",
     "python-dotenv>=1.2.2",

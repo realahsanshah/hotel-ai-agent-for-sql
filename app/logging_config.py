@@ -54,5 +54,7 @@ def setup_logging() -> None:
     # connection, every retry) — cap them at WARNING so app-level logs
     # aren't drowned out. Bump to the app's level explicitly if you're
     # debugging an OpenAI API or DB connection issue.
-    for noisy_logger in ("httpx", "httpcore", "openai", "urllib3"):
+    # nemoguardrails logs its entire action registry (~50 lines) at INFO on
+    # every import — noise, not signal, for this app.
+    for noisy_logger in ("httpx", "httpcore", "openai", "urllib3", "nemoguardrails"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)

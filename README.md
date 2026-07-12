@@ -6,18 +6,20 @@ synthetic hotel PMS (property management system) dataset and get back an
 answer, the SQL that produced it, and which agent(s) handled the request.
 
 See [AGENT_PLAN.md](AGENT_PLAN.md) for the full reasoning behind the agent
-architecture (single vs. multi-agent, handoffs vs. agents-as-tools,
-tracing, and the NeMo Guardrails integration seam).
+architecture (single vs. multi-agent, handoffs vs. agents-as-tools, and
+tracing).
 
 ## Architecture
 
 ```
 FastAPI (app/main.py)
+  -> check_input()                 (app/guardrails.py, NeMo Guardrails input rail)
   -> PlannerAgent                  (app/agents.py)
        -> query_hotel_database     tool -> SQLAgent
                                              -> list_tables / get_table_schema / run_query
                                                 (app/tools.py -> app/sql_connector.py -> Postgres)
        -> summarize_results        tool -> SummarizerAgent
+  -> check_output()                (app/guardrails.py, NeMo Guardrails output rail)
 ```
 
 - **db/schema.sql** — plain SQL schema for the hotel PMS dataset (no ORM).
@@ -44,10 +46,26 @@ FastAPI (app/main.py)
   (`app/context.py`), not inferred from the LLM's own narration.
 - **app/main.py** — a plain FastAPI JSON API (`/ask`, `/health`, `/schema`)
   with no bundled frontend. No auth (single local user, deliberately
-  deferred — see the module docstring).
+  deferred — see the module docstring). Every request is logged (see
+  `app/logging_config.py`) to console + `logs/app.log`.
 - **web/** — a small Next.js chat UI that calls the API above. Runs as a
   separate process on its own dev server; `app/main.py` enables CORS for
   it (see that module's docstring).
+- **guardrails/ + app/guardrails.py** — NeMo Guardrails input/output rails.
+  The input rail blocks off-topic questions and prompt-injection attempts
+  before they reach any agent; the output rail blocks unsafe responses
+  AND fact-checks the final answer's claims against the real SQL results
+  collected during the run (`app/context.py`'s `evidence_log`). This is
+  what catches summarizer hallucinations — e.g. it caught the pipeline
+  once claiming "11 properties" when the query it ran actually returned 3.
+  Both rails run in their own `LLMRails` instance, separate from the
+  OpenAI Agents SDK pipeline — see the module docstring for how "blocked
+  vs. allowed" is detected.
+- **Conversation memory** — `/ask` accepts an optional `session_id`;
+  when present, prior turns are loaded via the Agents SDK's `SQLiteSession`
+  (`app/analyst.py`, stored in `data/sessions.db`) so follow-up questions
+  like "how was it distributed?" resolve against earlier turns. The
+  Next.js UI generates one `session_id` per page load.
 
 ## Prerequisites
 
@@ -117,9 +135,10 @@ uv run python scripts/test_agent_manual.py        # full agent pipeline, require
 ## What's deliberately out of scope
 
 - **Auth / multi-tenancy** — single local user only (see `app/main.py`).
-- **NeMo Guardrails** — input/output rail integration points are marked
-  with `# TODO(guardrails):` comments in `app/main.py`; see
-  [AGENT_PLAN.md](AGENT_PLAN.md) section 2 for where and why they'd sit.
 - **Real security boundary on SQL execution** — the SELECT-only guard in
   `app/sql_connector.py` blocks obvious accidents, not a determined
-  adversary; see that module's docstring.
+  adversary; see that module's docstring. The guardrails above are a
+  content-safety/quality layer, not a replacement for this.
+- **Write operations** — the pipeline is intentionally read-only end to
+  end (SELECT-only DB guard, output rail blocks any claimed write). Adding
+  INSERT/UPDATE would need its own approval/audit design first.

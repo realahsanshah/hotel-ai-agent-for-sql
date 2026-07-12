@@ -31,6 +31,39 @@ class AnalystResponse:
     sql: list[str]
     agents_used: list[str]
     elapsed_seconds: float
+    # SQL + result rows, formatted as text. Not part of the public API
+    # response (see app/main.py's AskResponse) — only used internally to
+    # feed the output guardrail's fact-check (app/guardrails.py).
+    evidence: list[str]
+
+
+async def get_recent_history_text(session_id: str, limit: int = 6) -> str:
+    """Renders the last `limit` conversation items as plain text.
+
+    Used by app/main.py to give the input guardrail (app/guardrails.py)
+    enough context to judge short follow-ups correctly — e.g. "list of
+    it?" reads as gibberish/off-topic in isolation, which is exactly what
+    happened before this existed: the input rail blocked a legitimate
+    follow-up because self_check_input only ever sees the current message,
+    with no idea what "it" refers to."""
+    session = SQLiteSession(session_id, db_path=SESSIONS_DB_PATH)
+    items = await session.get_items(limit=limit)
+    lines = []
+    for item in items:
+        role = item.get("role")
+        if role == "user":
+            lines.append(f"User: {item.get('content')}")
+        elif role == "assistant":
+            content = item.get("content")
+            if isinstance(content, list):
+                text = " ".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            else:
+                text = content
+            if text:
+                lines.append(f"Assistant: {text}")
+    return "\n".join(lines)
 
 
 async def ask(question: str, session_id: str | None = None) -> AnalystResponse:
@@ -72,4 +105,5 @@ async def ask(question: str, session_id: str | None = None) -> AnalystResponse:
         sql=context.sql_log,
         agents_used=context.agents_used,
         elapsed_seconds=elapsed,
+        evidence=context.evidence_log,
     )

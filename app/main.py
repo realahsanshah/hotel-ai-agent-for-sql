@@ -28,7 +28,8 @@ from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from app.analyst import ask  # noqa: E402
+from app.analyst import ask, get_recent_history_text  # noqa: E402
+from app.guardrails import check_input, check_output, fallback_answer_from_evidence  # noqa: E402
 from app.sql_connector import get_table_schema, list_tables  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -126,43 +127,78 @@ async def ask_question(request: AskRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question must not be empty.")
 
-    logger.info(
-        "Question received (session=%s): %r",
-        request.session_id or "-",
-        request.question,
-    )
+    session_label = request.session_id or "-"
+    logger.info("Question received (session=%s): %r", session_label, request.question)
+    start = time.monotonic()
 
-    # TODO(guardrails): an input rail belongs right here, before `ask()` is
-    # called — see AGENT_PLAN.md section 2. It would validate/reject the
-    # raw question (off-topic, prompt-injection, etc.) before any agent
-    # sees it. Not implemented in this pass.
+    # Input rail: runs before the question reaches any agent. Blocks
+    # off-topic questions and prompt-injection/jailbreak attempts — see
+    # guardrails/prompts.yml for the exact policy and AGENT_PLAN.md
+    # section 2 for why this sits here rather than inside the pipeline.
+    # Recent history is included so a context-dependent follow-up like
+    # "list of it?" is judged in light of what "it" refers to, rather than
+    # blocked for looking like gibberish in isolation.
+    history = await get_recent_history_text(request.session_id) if request.session_id else None
+    allowed, refusal = await check_input(request.question, history=history)
+    if not allowed:
+        elapsed = time.monotonic() - start
+        logger.warning(
+            "Input guardrail blocked question (session=%s) in %.2fs: %r",
+            session_label, elapsed, request.question,
+        )
+        return AskResponse(
+            answer=refusal or "I can't help with that.",
+            sql=[],
+            agents_used=["InputGuardrail"],
+            elapsed_seconds=elapsed,
+        )
 
     try:
         result = await ask(request.question, session_id=request.session_id)
     except Exception:
         logger.exception(
             "Agent pipeline failed for question (session=%s): %r",
-            request.session_id or "-",
+            session_label,
             request.question,
         )
         raise
 
-    # TODO(guardrails): an output rail belongs right here, before the
-    # response is returned to the client — see AGENT_PLAN.md section 2.
+    # Output rail: runs after the pipeline has an answer, before it's
+    # returned to the client. Checks the answer doesn't leak internals /
+    # falsely claim a write action, AND fact-checks its claims against the
+    # real SQL results the pipeline collected (result.evidence) — this is
+    # what would have caught the "6 properties" hallucination found during
+    # manual testing, where the SQL was right but the prose wasn't.
+    allowed, _ = await check_output(request.question, result.answer, result.evidence)
+    if allowed:
+        answer = result.answer
+        agents_used = result.agents_used
+    else:
+        # Don't just refuse — most blocks here are the fact-check catching
+        # the summarizer inventing a number, and the underlying evidence is
+        # itself safe to show (see fallback_answer_from_evidence's
+        # docstring). Surface the real data instead of a dead end.
+        answer = fallback_answer_from_evidence(result.evidence)
+        agents_used = [*result.agents_used, "OutputGuardrail"]
+        logger.warning(
+            "Output guardrail blocked answer (session=%s), showing evidence fallback instead: %r",
+            session_label, result.answer,
+        )
 
+    elapsed = time.monotonic() - start
     logger.info(
         "Answered in %.2fs via %s (session=%s): %r",
-        result.elapsed_seconds,
-        " -> ".join(result.agents_used),
-        request.session_id or "-",
-        result.answer,
+        elapsed,
+        " -> ".join(agents_used),
+        session_label,
+        answer,
     )
     for sql in result.sql:
         logger.info("SQL run: %s", " ".join(sql.split()))
 
     return AskResponse(
-        answer=result.answer,
+        answer=answer,
         sql=result.sql,
-        agents_used=result.agents_used,
-        elapsed_seconds=result.elapsed_seconds,
+        agents_used=agents_used,
+        elapsed_seconds=elapsed,
     )

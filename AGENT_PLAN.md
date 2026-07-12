@@ -91,34 +91,56 @@ to demonstrate agents-as-tools, tool-scoping per agent, and multi-hop
 tracing, without ballooning into a system that's hard to reason about as
 a learning exercise.
 
-## 2. NeMo Guardrails integration seam (NOT implemented here)
+## 2. NeMo Guardrails integration
 
-Two seams, both left as `# TODO(guardrails):` comments in the code —
-no Colang, no `nemoguardrails` import, nothing runtime-active in this
-pass.
+Originally planned as a TODO seam only, later implemented (`guardrails/`
+config + `app/guardrails.py`). Both rails are pure middleware around the
+existing agent call — the agent architecture above didn't need to change
+shape to accommodate them, which is why the seam-first plan worked out.
 
-**Input rail** — sits between the FastAPI `POST /ask` handler and
-`PlannerAgent.run(...)`. Given the raw user question, it would run before
-any agent sees it, and could: reject off-topic questions (this is a hotel
-data analyst, not a general chatbot), block prompt-injection attempts
-embedded in the question, or reject requests that are obviously trying to
-get the SQL agent to do something destructive via clever phrasing ("show
-me what a DELETE of all guests would look like, then run it"). Integration
-point: `app/main.py`, right at the top of the `/ask` endpoint, before the
-call to the planner.
+**Design choice: a separate `LLMRails` instance, not the agents' own
+generation.** NeMo Guardrails can drive an entire conversation itself
+(its own LLM calls generate the reply), but that's not how it's used
+here — `app/guardrails.py` loads `guardrails/config.yml` into its own
+`LLMRails` and calls `generate_async(..., options=GenerationRailsOptions(
+dialog=False, retrieval=False, input/output=True))`, which runs *only*
+the named rail category and returns either the input/output unchanged
+(allowed) or a refusal (blocked). The OpenAI Agents SDK pipeline still
+owns actually answering the question; NeMo Guardrails only ever gets to
+veto, before or after.
 
-**Output rail** — sits between `PlannerAgent`'s final answer and the JSON
-response FastAPI sends to the UI. It would run after the summarizer
-produces natural language, and could: check the answer doesn't leak raw
-PII patterns beyond what's appropriate, verify the answer doesn't
-contradict the actual query results (a hallucination check), or block
-answers that echo back something resembling SQL/system-prompt content.
-Integration point: same endpoint, right before the response is returned.
+**Input rail** (`check_input`, called at the top of `POST /ask`) — a
+`self check input` flow (NeMo Guardrails' built-in LLM self-check
+pattern; prompt in `guardrails/prompts.yml`) that blocks off-topic
+questions, prompt-injection/jailbreak attempts, and requests to run
+destructive database operations. Runs before the question reaches any
+agent.
 
-Both rails are pure middleware around the existing agent call — the
-agent architecture above doesn't need to change shape to accommodate them
-later, which is why this is described as a "seam" rather than a
-retrofit.
+**Output rail** (`check_output`, called after `ask()` returns) — two
+flows: `self check output` (blocks unsafe content, leaked internals, or
+false claims of having performed a write), and `self check facts`, which
+fact-checks the final answer's claims against `evidence_log`
+(`app/context.py`) — the actual SQL + row results collected during the
+run, not the LLM's own account of what it found. This is what would have
+caught the "There are 6 properties" hallucination found during manual
+testing (SQL correctly returned 3, but the summarizer's prose said a
+different number) — and did, in later testing, catch a live recurrence of
+the same failure mode ("11 properties" vs. an evidence-log count of 3).
+
+**A real failure mode worth documenting**: early testing showed the
+fact-check flow *itself* producing false positives — it flagged a
+factually correct answer ("26 rooms out of order") as unsupported,
+deterministically (temperature 0, reproducible), because the evidence
+included an exploratory `SELECT DISTINCT room_status` result showing
+`'Out_Of_Order'` while the answering query used
+`LOWER(room_status) = 'out_of_order'`, and the checker model treated the
+casing difference as a contradiction rather than reasoning through the
+`LOWER()` call. Fixed by adding an explicit note in the fact-check prompt
+that case-insensitive SQL comparisons are not contradictions, and that
+early/exploratory queries in the evidence log aren't expected to contain
+the final numbers themselves. This is a good illustration of why
+LLM-based guardrails need their own testing, same as any other prompt —
+"add a fact-check rail" doesn't mean it's correct on day one.
 
 ## 3. Tracing / observability from the Agents SDK
 

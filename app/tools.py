@@ -54,4 +54,6 @@ def run_query_tool(
     UPDATE, DELETE, DDL, and multi-statement queries are rejected."""
     ctx.context.record_agent("SQLAgent")
     ctx.context.record_sql(sql)
-    return run_query(sql, max_rows=max_rows)
+    rows = run_query(sql, max_rows=max_rows)
+    ctx.context.record_evidence(sql, rows)
+    return rows
