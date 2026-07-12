@@ -1,7 +1,12 @@
 """
-FastAPI UI layer. Talks only to app/analyst.ask() (the planner agent) and
+FastAPI backend. Talks only to app/analyst.ask() (the planner agent) and
 app/sql_connector.py (for the read-only /schema endpoint) — it has no
 database or agent logic of its own.
+
+The UI (web/, a small Next.js app) runs as a separate process on its own
+dev-server port and calls this API over HTTP, so CORS is enabled below for
+local development. This is a plain JSON API with no bundled frontend of
+its own.
 
 AUTH NOTE: there is deliberately no authentication or multi-tenancy here.
 This is a single-user local learning project; every request is trusted.
@@ -9,24 +14,25 @@ Do not deploy this behind a public URL as-is — adding auth (e.g. an
 API key header or OAuth) is a separate, deferred concern.
 """
 
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.analyst import ask
 from app.sql_connector import get_table_schema, list_tables
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-
 app = FastAPI(title="Hotel Data Analyst")
 
-# Serves style.css / app.js under /static/*; index.html is served
-# separately at "/" below (StaticFiles alone won't serve "/" -> index.html
-# without directory-listing quirks, so we handle that route explicitly).
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Next.js dev server runs on :3000 by default; this API runs on :8000.
+# Different ports = different origins, so the browser blocks the fetch()
+# calls in web/ without explicit CORS headers. Wide open ("*" methods/
+# headers) is fine for a local single-user dev setup — see AUTH NOTE above.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class AskRequest(BaseModel):
@@ -38,11 +44,6 @@ class AskResponse(BaseModel):
     sql: list[str]
     agents_used: list[str]
     elapsed_seconds: float
-
-
-@app.get("/")
-def serve_index():
-    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
