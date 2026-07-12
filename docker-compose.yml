@@ -1,0 +1,32 @@
+# Postgres only — the FastAPI app and agent code run on the host via
+# uvicorn (see README/section-5 notes), not in a container. Keeping the app
+# out of Docker for now means fast reload during learning; containerizing it
+# is a trivial follow-up (just add a service + Dockerfile) once the app
+# itself is stable.
+services:
+  postgres:
+    image: postgres:16
+    container_name: hotel_pms_postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - hotel_pms_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready confirms the server accepts connections; ingest.py polls
+      # this same signal via psycopg before touching the schema, so the two
+      # checks don't drift apart.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  hotel_pms_data:
+    name: hotel_pms_data
