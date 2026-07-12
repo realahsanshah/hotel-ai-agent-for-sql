@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Hotel Data Analyst</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Hotel Data Analyst</h1>
+    <span id="health-indicator" class="pill">checking...</span>
+  </header>
+
+  <main>
+    <div id="chat"></div>
+
+    <form id="ask-form">
+      <input
+        id="question-input"
+        type="text"
+        placeholder="e.g. Which reservation statuses exist, and how many of each?"
+        autocomplete="off"
+      />
+      <button type="submit">Ask</button>
+    </form>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
